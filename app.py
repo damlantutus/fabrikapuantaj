@@ -16,16 +16,17 @@ import streamlit as st
 st.set_page_config(page_title="Puantaj Analiz Sistemi", layout="wide", page_icon="🏭")
 
 AY_SIRA = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz",
-           "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+"Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"
+]
 
 GELDI_SAYILAN = {"Geldi", "Kozmetik", "Ambalaj", "Refakatçi"}
 
 STATUS_MAP = {
-    "kozmetik": "Kozmetik", "kozmetık": "Kozmetik",
+    "kozmetik": "Kozmetik", "kozmetik": "Kozmetik",
     "amb": "Ambalaj", "ambalaj": "Ambalaj",
     "geldi": "Geldi",
     "refakatçi": "Refakatçi", "refakatci": "Refakatçi",
-    "istirahatli": "İstirahatli", "i̇stirahatli": "İstirahatli", "rapor": "İstirahatli",
+    "istirahatli": "İstirahatli", "istirahatlı": "İstirahatli", "rapor": "İstirahatli",
     "haftalık tatil": "Haftalık Tatil", "haftalik tatil": "Haftalık Tatil",
     "ücretsiz izin": "Ücretsiz İzin", "ucretsiz izin": "Ücretsiz İzin",
     "yıllık izinli": "Yıllık İzinli", "yillik izinli": "Yıllık İzinli",
@@ -323,7 +324,8 @@ with tab1:
         if gorunum.empty:
             st.info("Seçilen periyot için veri bulunamadı.")
         else:
-            styled = gorunum.style.applymap(style_durum, subset=["Durum"])
+            gorunum = gorunum.loc[:, ~gorunum.columns.duplicated()].reset_index(drop=True)
+            styled = gorunum.style.map(style_durum, subset=["Durum"])
             st.dataframe(styled, use_container_width=True, hide_index=True, height=420)
 
     with col_d2:
