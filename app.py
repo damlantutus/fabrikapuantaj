@@ -1,443 +1,747 @@
 # -*- coding: utf-8 -*-
 """
 Fabrika Puantaj / Devam Analiz Sistemi
+----------------------------------------
 Streamlit + Pandas + Openpyxl + Plotly
+
+Çalıştırmak için:
+    pip install streamlit pandas openpyxl plotly numpy
+    streamlit run app.py
 """
 
 import io
+import re
+import random
+import calendar
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# ----------------------------------------------------------------------------
-# SABİTLER
-# ----------------------------------------------------------------------------
-st.set_page_config(page_title="Puantaj Analiz Sistemi", layout="wide", page_icon="🏭")
+# =========================================================================================
+# 1) SABİTLER
+# =========================================================================================
 
-AY_SIRA = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz",
-"Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"
-]
+st.set_page_config(
+    page_title="Fabrika Puantaj / Devam Analiz Sistemi",
+    page_icon="🏭",
+    layout="wide",
+)
 
-GELDI_SAYILAN = {"Geldi", "Kozmetik", "Ambalaj", "Refakatçi"}
-
-STATUS_MAP = {
-    "kozmetik": "Kozmetik", "kozmetik": "Kozmetik",
-    "amb": "Ambalaj", "ambalaj": "Ambalaj",
-    "geldi": "Geldi",
-    "refakatçi": "Refakatçi", "refakatci": "Refakatçi",
-    "istirahatli": "İstirahatli", "istirahatlı": "İstirahatli", "rapor": "İstirahatli",
-    "haftalık tatil": "Haftalık Tatil", "haftalik tatil": "Haftalık Tatil",
-    "ücretsiz izin": "Ücretsiz İzin", "ucretsiz izin": "Ücretsiz İzin",
-    "yıllık izinli": "Yıllık İzinli", "yillik izinli": "Yıllık İzinli",
-    "resmi tatil": "Resmi Tatil",
+TURKCE_AYLAR = {
+    "ocak": 1, "şubat": 2, "subat": 2, "mart": 3, "nisan": 4,
+    "mayıs": 5, "mayis": 5, "haziran": 6, "temmuz": 7,
+    "ağustos": 8, "agustos": 8, "eylül": 9, "eylul": 9,
+    "ekim": 10, "kasım": 11, "kasim": 11, "aralık": 12, "aralik": 12,
 }
 
-STATUS_COLORS = {
-    "Geldi": "background-color: #c6efce",
-    "Kozmetik": "background-color: #bee7e8",
-    "Ambalaj": "background-color: #bee7e8",
-    "Refakatçi": "background-color: #bee7e8",
-    "Haftalık Tatil": "background-color: #e2e3e5",
-    "İstirahatli": "background-color: #f8c9c9",
-    "Ücretsiz İzin": "background-color: #ffe8a1",
-    "Yıllık İzinli": "background-color: #ffe8a1",
-    "Resmi Tatil": "background-color: #cfe2ff",
+# 2026 yılı resmi tatil ve arife günleri (Diyanet/Resmi Gazete duyurularına göre tahmini/onaylı tarihler).
+# Gerekirse bu sözlüğü güncelleyerek kendi fabrikanızın resmi tatil takvimine uyarlayabilirsiniz.
+RESMI_TATILLER_2026 = {
+    (1, 1): "Yılbaşı",
+    (3, 19): "Ramazan Bayramı Arifesi (Yarım Gün)",
+    (3, 20): "Ramazan Bayramı 1. Gün",
+    (3, 21): "Ramazan Bayramı 2. Gün",
+    (3, 22): "Ramazan Bayramı 3. Gün",
+    (4, 23): "23 Nisan Ulusal Egemenlik ve Çocuk Bayramı",
+    (5, 1): "1 Mayıs Emek ve Dayanışma Günü",
+    (5, 19): "19 Mayıs Atatürk'ü Anma Gençlik ve Spor Bayramı",
+    (5, 26): "Kurban Bayramı Arifesi (Yarım Gün)",
+    (5, 27): "Kurban Bayramı 1. Gün",
+    (5, 28): "Kurban Bayramı 2. Gün",
+    (5, 29): "Kurban Bayramı 3. Gün",
+    (5, 30): "Kurban Bayramı 4. Gün",
+    (7, 15): "15 Temmuz Demokrasi ve Millî Birlik Günü",
+    (8, 30): "30 Ağustos Zafer Bayramı",
+    (10, 28): "29 Ekim Cumhuriyet Bayramı Arifesi (Yarım Gün)",
+    (10, 29): "29 Ekim Cumhuriyet Bayramı",
+}
+
+GELDI_SAYILAN_DURUMLAR = ["Geldi", "Kozmetik", "Ambalaj", "Refakatçi"]
+
+DURUM_RENK = {
+    "Geldi": "background-color:#d4edda",
+    "Kozmetik": "background-color:#cce5ff",
+    "Ambalaj": "background-color:#fff3cd",
+    "Refakatçi": "background-color:#e2d6f3",
+    "İstirahatli": "background-color:#f8d7da",
+    "Ücretsiz İzin": "background-color:#f5c6cb",
+    "Yıllık İzinli": "background-color:#d1ecf1",
+    "Tatil": "background-color:#e9ecef; color:#6c757d",
+    "Diğer": "background-color:#fce8b2",
 }
 
 
-# ----------------------------------------------------------------------------
-# NORMALİZASYON
-# ----------------------------------------------------------------------------
-def normalize_status(val):
-    if pd.isna(val):
+# =========================================================================================
+# 2) YARDIMCI FONKSİYONLAR (ETL / SINIFLANDIRMA)
+# =========================================================================================
+
+def parse_ay_yil(sheet_name: str):
+    """Sekme isminden (örn. 'OCAK-2026') ay numarasını ve yılı çıkarır."""
+    s = tr_lower(sheet_name.strip())
+    yil_match = re.search(r"(20\d{2})", s)
+    yil = int(yil_match.group(1)) if yil_match else 2026
+
+    ay_no = None
+    for ay_adi, no in TURKCE_AYLAR.items():
+        if ay_adi in s:
+            ay_no = no
+            break
+    return ay_no, yil
+
+
+def is_tatil_gunu(yil: int, ay: int, gun: int):
+    """Verilen tarih Pazar günü mü ya da resmi tatil/arife mi kontrol eder."""
+    try:
+        d = date(yil, ay, gun)
+    except ValueError:
+        return False, None
+    if d.weekday() == 6:  # Pazartesi=0 ... Pazar=6
+        return True, "Pazar (Haftalık Tatil)"
+    if (ay, gun) in RESMI_TATILLER_2026:
+        return True, RESMI_TATILLER_2026[(ay, gun)]
+    return False, None
+
+
+def parse_saat(deger):
+    """Hücre değerini sayısal saate çevirmeye çalışır. Başarısızsa None döner."""
+    if deger is None:
         return None
-    s = str(val).strip().lower()
-    if s == "" or s == "nan" or s == "nat":
+    if isinstance(deger, bool):
         return None
-    if s in STATUS_MAP:
-        return STATUS_MAP[s]
-    if "bayram" in s or "resmi tatil" in s or "tatili" in s:
-        return "Resmi Tatil"
-    # Bilinmeyen / tanımsız bir metin ise, orijinal halini (title-case) koru
-    return str(val).strip()
+    if isinstance(deger, (int, float)):
+        if pd.isna(deger):
+            return None
+        return float(deger)
+    s = str(deger).strip().replace(",", ".")
+    if s == "":
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 
-# ----------------------------------------------------------------------------
-# ETL: EXCEL -> UZUN FORMAT DATAFRAME
-# ----------------------------------------------------------------------------
-def load_and_transform(uploaded_file):
-    xls = pd.ExcelFile(uploaded_file, engine="openpyxl")
-    sheet_names = [s for s in xls.sheet_names if s.strip().lower() not in ("özet", "ozet")]
+def tr_lower(s: str) -> str:
+    """Türkçe'ye özgü İ/I harflerini doğru şekilde küçük harfe çevirir.
+    Standart Python .lower() metodu 'İ' harfini 'i̇' (noktalı bileşik) karaktere
+    çevirdiğinden, "KOZMETİK" gibi büyük harfli Türkçe girdilerin eşleşmesini bozar."""
+    return s.replace("İ", "i").replace("I", "ı").lower()
 
-    all_frames = []
-    for sheet in sheet_names:
-        raw = pd.read_excel(xls, sheet_name=sheet)
-        raw.columns = [str(c).strip() for c in raw.columns]
 
-        if raw.shape[1] < 3:
+def classify_durum(raw_value):
+    """
+    Ham hücre değerini standart bir Durum etiketine çevirir.
+    Dönüş: (durum_str veya None, saat_degeri veya None)
+    """
+    if raw_value is None or (isinstance(raw_value, float) and pd.isna(raw_value)):
+        return None, None
+
+    s_raw = str(raw_value).strip()
+    if s_raw == "" or s_raw.lower() == "nan":
+        return None, None
+
+    # 1) Sayısal saat kontrolü -> kaç saat olursa olsun "Geldi"
+    saat = parse_saat(raw_value)
+    if saat is not None:
+        return "Geldi", saat
+
+    s = tr_lower(s_raw)
+
+    if s in {"kozmetik", "kozmetık"}:
+        return "Kozmetik", None
+    if s in {"amb", "ambalaj"}:
+        return "Ambalaj", None
+    if s in {"refakatçi", "refakatci"}:
+        return "Refakatçi", None
+    if s == "geldi":
+        return "Geldi", None
+    if s in {"ist", "istirahatli", "rapor"}:
+        return "İstirahatli", None
+    if s in {"izin", "ücretsiz izin", "ucretsiz izin"}:
+        return "Ücretsiz İzin", None
+    if s in {"yıllık izin", "yıllık izinli", "yillik izin", "yillik izinli"}:
+        return "Yıllık İzinli", None
+    if s in {"resmi tatil", "pazar", "tatil", "arife"} or "arife" in s or "tatil" in s:
+        return "Tatil", None
+
+    return "Diğer", None
+
+
+def gecerli_personel_mi(sicil: str, ad_soyad: str) -> bool:
+    """
+    Puantaj tablosundaki gerçek personel satırlarını, "SAYIM GÜNÜ",
+    "1 MAYIS İŞÇİ BAYRAMI" gibi personel olmayan açıklama/etkinlik satırlarından ayırt eder.
+    """
+    # 1) Sicil No sayısal olmalı (gerçek personel sicil numaraları sayısaldır).
+    try:
+        float(str(sicil).strip().replace(",", "."))
+    except (ValueError, TypeError):
+        return False
+
+    # 2) Ad Soyad, sicil no'nun fallback'i değilse (yani gerçek bir isim ise) rakam içermemeli.
+    #    ("1 MAYIS İŞÇİ BAYRAMI" gibi tarih içeren notlar bu şekilde elenir.)
+    if ad_soyad != sicil and any(ch.isdigit() for ch in str(ad_soyad)):
+        return False
+
+    # 3) Bilinen özel gün / sayım notu anahtar kelimeleri.
+    ozel_kelimeler = {"bayram", "sayım", "sayim", "tatil", "arife", "kapanış", "kapanis"}
+    ad_soyad_kucuk = tr_lower(str(ad_soyad))
+    if any(kelime in ad_soyad_kucuk for kelime in ozel_kelimeler):
+        return False
+
+    return True
+
+
+def load_excel_to_long(file_like) -> pd.DataFrame:
+    """Yüklenen Excel dosyasını okuyup uzun (long) formatlı DataFrame'e dönüştürür."""
+    xls = pd.ExcelFile(file_like)
+    all_rows = []
+
+    for sheet in xls.sheet_names:
+        ay_no, yil = parse_ay_yil(sheet)
+        if ay_no is None:
+            # Ay sekmesi olarak tanınamayan sekmeler (örn. "Özet") atlanır.
             continue
 
-        id_col = raw.columns[0]
-        name_col = raw.columns[1]
+        df = xls.parse(sheet, dtype=object)
+        df.columns = [str(c).strip() for c in df.columns]
+        cols = list(df.columns)
 
-        # Son 2 sütun özet sütunları (Ücretsiz İzin (gün) / Oranı) ise hariç tut
-        last_cols = [str(c).lower() for c in raw.columns[-2:]]
-        if len(raw.columns) > 4 and any("izin" in c for c in last_cols):
-            day_cols = list(raw.columns[2:-2])
-        else:
-            day_cols = list(raw.columns[2:])
+        # İlk sütun her zaman Sicil No kabul edilir (başlığı ne olursa olsun: "Sicil No", "Unnamed: 0" vb.)
+        sicil_col = cols[0]
+
+        gun_sayisi_ay = calendar.monthrange(yil, ay_no)[1]
+
+        # Gün sütunlarını tespit et: başlığı 1..ayın_gun_sayisi arasında bir tamsayıya çevrilebilen sütunlar.
+        #
+        # ÖNEMLİ HATA DÜZELTMESİ: Excel'de yinelenen sütun başlıkları varsa (örn. iki adet "1" günü
+        # sütunu), pandas bunları otomatik olarak "1.1", "2.1" gibi ondalıklı adlarla yeniden adlandırır.
+        # Eskiden int(float("1.1")) = 1 olduğu için bu sütun yanlışlıkla "1. gün" ile eşleşip o günün
+        # verisi mükerrer sayılıyordu (Geldi_Gunu ikiye katlanıyor ama P_toplam katlanmıyordu, bu da
+        # %200 gibi imkânsız Devam Oranlarına yol açıyordu). Bu yüzden sadece TAM SAYI değerli
+        # (ondalık kısmı olmayan) başlıkları gün sütunu olarak kabul ediyoruz.
+        day_cols = []
+        gorulen_gunler = set()
+        for c in cols:
+            c_str = str(c).strip()
+            try:
+                d_float = float(c_str)
+            except (ValueError, TypeError):
+                continue
+            if not d_float.is_integer():
+                continue  # "1.1", "2.3" gibi pandas'ın otomatik eklediği yinelenen sütun son ekleri
+            d = int(d_float)
+            if 1 <= d <= gun_sayisi_ay and d not in gorulen_gunler:
+                day_cols.append((c, d))
+                gorulen_gunler.add(d)
 
         if not day_cols:
             continue
 
-        melted = raw.melt(
-            id_vars=[id_col, name_col],
-            value_vars=day_cols,
-            var_name="Gün/Tarih",
-            value_name="Durum",
-        )
-        melted = melted.rename(columns={id_col: "Sicil No", name_col: "Ad Soyad"})
-        melted["Ay"] = sheet.strip()
-
-        # Sıralama için orijinal sütun konumunu sakla (gün sırasını korumak için)
-        order_map = {col: i for i, col in enumerate(day_cols)}
-        melted["Sıra"] = melted["Gün/Tarih"].map(order_map)
-
-        all_frames.append(melted)
-
-    if not all_frames:
-        raise ValueError("Excel dosyasında işlenebilir ay sekmesi bulunamadı.")
-
-    df = pd.concat(all_frames, ignore_index=True)
-    df["Sicil No"] = df["Sicil No"].astype(str).str.strip()
-    df["Ad Soyad"] = df["Ad Soyad"].astype(str).str.strip()
-    df["Gün/Tarih"] = df["Gün/Tarih"].astype(str).str.strip()
-    df["Durum_Norm"] = df["Durum"].apply(normalize_status)
-    df = df.dropna(subset=["Durum_Norm"]).reset_index(drop=True)
-    df = df[df["Sicil No"].str.lower() != "nan"]
-    return df
+        day_col_names = {c for c, _ in day_cols}
+        # Gün sütunlarından ilkinin index'i: Sicil No ile ilk gün sütunu arasındaki her şey isim sütunu kabul edilir.
+        # (Örn: "AEROSOL ÜRETİM", "Unnamed: 2" gibi ayrı Ad/Soyad sütunları da bu şekilde otomatik yakalanır.)
+        first_day_idx = min(cols.index(c) for c in day_col_names)
+        name_cols = [c for c in cols[1:first_day_idx] if c not in day_col_names]
 
 
-# ----------------------------------------------------------------------------
-# MOCK VERİ ÜRETİMİ
-# ----------------------------------------------------------------------------
-@st.cache_data
-def generate_mock_data():
-    np.random.seed(42)
-    months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz"]
-    days_in_month = {"Ocak": 31, "Şubat": 28, "Mart": 31, "Nisan": 30,
-                      "Mayıs": 31, "Haziran": 30, "Temmuz": 31}
+        for _, row in df.iterrows():
+            sicil_raw = row.get(sicil_col)
+            if sicil_raw is None or (isinstance(sicil_raw, float) and pd.isna(sicil_raw)) or str(sicil_raw).strip() == "":
+                continue
+            sicil = str(sicil_raw).strip()
 
-    isimler = [
-        "Ahmet Yılmaz", "Mehmet Demir", "Ayşe Kaya", "Fatma Şahin", "Mustafa Çelik",
-        "Emine Yıldız", "Hüseyin Aydın", "Zeynep Arslan", "Ali Doğan", "Hatice Kılıç",
-        "İbrahim Aslan", "Elif Çetin", "Hasan Kurt", "Sultan Özdemir", "Kemal Koç",
-        "Aylin Kaplan", "Serkan Er", "Derya Şen", "Bora Aksoy", "Nur Polat",
-    ]
-    employees = [(str(1000 + i), ad) for i, ad in enumerate(isimler)]
+            ad_soyad_parcalari = []
+            for c in name_cols:
+                deger = row.get(c)
+                if deger is None or (isinstance(deger, float) and pd.isna(deger)):
+                    continue
+                deger_str = str(deger).strip()
+                if deger_str == "" or deger_str.lower() == "nan":
+                    continue
+                ad_soyad_parcalari.append(deger_str)
+            ad_soyad = " ".join(ad_soyad_parcalari).strip()
+            if ad_soyad == "":
+                ad_soyad = sicil  # son çare: sicil no'yu isim olarak kullan
 
-    pool_normal = (["Geldi"] * 70 + ["Haftalık Tatil"] * 15 + ["İstirahatli"] * 4 +
-                   ["Ücretsiz İzin"] * 3 + ["Yıllık İzinli"] * 3 + ["Kozmetik"] * 2 +
-                   ["Ambalaj"] * 2 + ["Refakatçi"] * 1)
-    pool_yuksek = ["Geldi"] * 85 + ["Haftalık Tatil"] * 13 + ["İstirahatli"] * 1 + ["Kozmetik"] * 1
-    pool_dusuk = (["Geldi"] * 55 + ["Haftalık Tatil"] * 13 + ["İstirahatli"] * 15 +
-                  ["Ücretsiz İzin"] * 10 + ["Yıllık İzinli"] * 5 + ["Ambalaj"] * 2)
+            # Gerçek personel olmayan (özel gün/sayım notu vb.) satırları tamamen atla.
+            if not gecerli_personel_mi(sicil, ad_soyad):
+                continue
 
-    rows = []
-    for sicil, ad in employees:
-        bias = np.random.choice(["yuksek", "orta", "dusuk"], p=[0.3, 0.5, 0.2])
-        pool = pool_yuksek if bias == "yuksek" else (pool_dusuk if bias == "dusuk" else pool_normal)
-        for ay in months:
-            n = days_in_month[ay]
-            for gun in range(1, n + 1):
-                durum = np.random.choice(pool)
-                rows.append({
-                    "Sicil No": sicil, "Ad Soyad": ad, "Ay": ay,
-                    "Gün/Tarih": str(gun), "Sıra": gun, "Durum": durum,
+            for col, gun_no in day_cols:
+                raw_val = row.get(col)
+                tatil, tatil_sebep = is_tatil_gunu(yil, ay_no, gun_no)
+                durum, saat = classify_durum(raw_val)
+
+                if tatil:
+                    durum_final = "Tatil"
+                else:
+                    durum_final = durum
+
+                all_rows.append({
+                    "Sicil No": sicil,
+                    "Ad Soyad": ad_soyad,
+                    "Ay": sheet,
+                    "AyNo": ay_no,
+                    "Yil": yil,
+                    "Gun": gun_no,
+                    "Tarih": date(yil, ay_no, gun_no),
+                    "Durum": durum_final,
+                    "Saat": saat,
+                    "TatilSebep": tatil_sebep,
                 })
 
-    df = pd.DataFrame(rows)
-    df["Durum_Norm"] = df["Durum"].apply(normalize_status)
-    df = df.dropna(subset=["Durum_Norm"]).reset_index(drop=True)
-    return df
+    sonuc_df = pd.DataFrame(all_rows)
+    if not sonuc_df.empty:
+        # Ek güvenlik katmanı: aynı personelin aynı ay/gün için (veri girişi hatası, tekrarlanan
+        # satır vb. nedenlerle) birden fazla kaydı varsa, her gün yalnızca BİR kez sayılmalıdır.
+        # Aksi halde Geldi_Gunu gibi sayaçlar mükerrer artıp %100'ü aşan devam oranlarına yol açar.
+        sonuc_df = sonuc_df.drop_duplicates(subset=["Sicil No", "Ay", "Gun"], keep="first")
+    return sonuc_df
 
 
-# ----------------------------------------------------------------------------
-# METRİK HESAPLAMALARI
-# ----------------------------------------------------------------------------
-def calc_stats(df: pd.DataFrame) -> dict:
-    if df.empty:
-        return dict(toplam_kayitli=0, haftalik_tatil=0, p_toplam=0, geldi=0,
-                    istirahat=0, ucretsiz_izin=0, yillik_izin=0, resmi_tatil=0,
-                    standart=0, kozmetik=0, ambalaj=0, refakatci=0, katilim_orani=0.0)
+def generate_mock_long_df(n_calisan: int = 25, yil: int = 2026) -> pd.DataFrame:
+    """Excel yüklenmediğinde kullanılacak örnek/mock veri seti üretir."""
+    random.seed(42)
 
-    toplam_kayitli = len(df)
-    haftalik = int((df["Durum_Norm"] == "Haftalık Tatil").sum())
-    p_toplam = toplam_kayitli - haftalik
-    geldi = int(df["Durum_Norm"].isin(GELDI_SAYILAN).sum())
-    istirahat = int((df["Durum_Norm"] == "İstirahatli").sum())
-    ucretsiz = int((df["Durum_Norm"] == "Ücretsiz İzin").sum())
-    yillik = int((df["Durum_Norm"] == "Yıllık İzinli").sum())
-    resmi = int((df["Durum_Norm"] == "Resmi Tatil").sum())
-    standart = int((df["Durum_Norm"] == "Geldi").sum())
-    kozmetik = int((df["Durum_Norm"] == "Kozmetik").sum())
-    ambalaj = int((df["Durum_Norm"] == "Ambalaj").sum())
-    refakatci = int((df["Durum_Norm"] == "Refakatçi").sum())
-    oran = round(geldi / p_toplam * 100, 2) if p_toplam > 0 else 0.0
+    isimler = [
+        "Ahmet Yılmaz", "Mehmet Demir", "Ayşe Kaya", "Fatma Şahin", "Ali Çelik",
+        "Zeynep Arslan", "Mustafa Doğan", "Elif Aydın", "Hüseyin Yıldız", "Emine Öztürk",
+        "İbrahim Aslan", "Hatice Koç", "Yusuf Kurt", "Meryem Şimşek", "Ömer Aksoy",
+        "Rabia Güneş", "Murat Bulut", "Sultan Polat", "Kemal Erdoğan", "Nur Aktaş",
+        "Ferhat Yalçın", "Gül Türkmen", "Cemal Öz", "Aslı Kara", "Serkan Bozkurt",
+    ]
+    calisanlar = [(f"{1000 + i}", isimler[i % len(isimler)]) for i in range(n_calisan)]
 
-    return dict(toplam_kayitli=toplam_kayitli, haftalik_tatil=haftalik, p_toplam=p_toplam,
-                geldi=geldi, istirahat=istirahat, ucretsiz_izin=ucretsiz, yillik_izin=yillik,
-                resmi_tatil=resmi, standart=standart, kozmetik=kozmetik, ambalaj=ambalaj,
-                refakatci=refakatci, katilim_orani=oran)
+    aylar = [
+        (1, "OCAK-2026"), (2, "ŞUBAT-2026"), (3, "MART-2026"), (4, "NİSAN-2026"),
+        (5, "MAYIS-2026"), (6, "HAZİRAN-2026"), (7, "TEMMUZ-2026"),
+    ]
 
+    durum_havuzu = (
+        ["Geldi"] * 42 + ["İstirahatli"] * 4 + ["Ücretsiz İzin"] * 2 +
+        ["Yıllık İzinli"] * 3 + ["Kozmetik"] * 4 + ["Ambalaj"] * 4 + ["Refakatçi"] * 2
+    )
+    saat_havuzu = [7.5, 7.5, 7.5, 7.5, 8, 8, 11, 5]
 
-def per_employee_stats(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for (sicil, ad), g in df.groupby(["Sicil No", "Ad Soyad"]):
-        s = calc_stats(g)
-        s["Sicil No"] = sicil
-        s["Ad Soyad"] = ad
-        rows.append(s)
+    for ay_no, ay_adi in aylar:
+        gun_sayisi = calendar.monthrange(yil, ay_no)[1]
+        for sicil, ad_soyad in calisanlar:
+            # Her çalışan için hafif farklı bir performans eğilimi (bazıları daha düşük katılımlı)
+            egilim = random.choice(["yuksek"] * 6 + ["orta"] * 3 + ["dusuk"] * 1)
+            for gun in range(1, gun_sayisi + 1):
+                tatil, tatil_sebep = is_tatil_gunu(yil, ay_no, gun)
+                if tatil:
+                    rows.append({
+                        "Sicil No": sicil, "Ad Soyad": ad_soyad, "Ay": ay_adi, "AyNo": ay_no,
+                        "Yil": yil, "Gun": gun, "Tarih": date(yil, ay_no, gun),
+                        "Durum": "Tatil", "Saat": None, "TatilSebep": tatil_sebep,
+                    })
+                    continue
+
+                if egilim == "yuksek":
+                    secim = random.choices(durum_havuzu, weights=None, k=1)[0] if random.random() < 0.95 else "İstirahatli"
+                elif egilim == "orta":
+                    secim = random.choice(durum_havuzu)
+                else:
+                    secim = random.choice(["Geldi"] * 25 + ["İstirahatli"] * 10 + ["Ücretsiz İzin"] * 6 + ["Yıllık İzinli"] * 4)
+
+                if secim == "Geldi":
+                    saat_val = random.choice(saat_havuzu)
+                    durum_final, saat = classify_durum(saat_val)
+                else:
+                    durum_final, saat = secim, None
+
+                rows.append({
+                    "Sicil No": sicil, "Ad Soyad": ad_soyad, "Ay": ay_adi, "AyNo": ay_no,
+                    "Yil": yil, "Gun": gun, "Tarih": date(yil, ay_no, gun),
+                    "Durum": durum_final, "Saat": saat, "TatilSebep": None,
+                })
+
     return pd.DataFrame(rows)
 
 
-def style_durum(val):
-    return STATUS_COLORS.get(val, "")
+def aggregate_calisan_ay(long_df: pd.DataFrame) -> pd.DataFrame:
+    """Çalışan x Ay kırılımında P_toplam, P_geldi ve tüm sayaçları hesaplar."""
+    if long_df.empty:
+        return pd.DataFrame(columns=[
+            "Sicil No", "Ad Soyad", "Ay", "AyNo", "Yil", "Toplam_Takvim_Gunu", "Tatil_Gunu",
+            "Geldi_Gunu", "Kozmetik_Gunu", "Ambalaj_Gunu", "Refakatci_Gunu", "Istirahat_Gunu",
+            "Ucretsiz_Izin_Gunu", "Yillik_Izin_Gunu", "Diger_Gunu", "Toplam_Saat", "P_toplam", "Devam_Orani",
+        ])
+
+    agg = long_df.groupby(["Sicil No", "Ad Soyad", "Ay", "AyNo", "Yil"]).agg(
+        Toplam_Takvim_Gunu=("Gun", "nunique"),
+        Tatil_Gunu=("Durum", lambda s: (s == "Tatil").sum()),
+        Geldi_Gunu=("Durum", lambda s: s.isin(GELDI_SAYILAN_DURUMLAR).sum()),
+        Kozmetik_Gunu=("Durum", lambda s: (s == "Kozmetik").sum()),
+        Ambalaj_Gunu=("Durum", lambda s: (s == "Ambalaj").sum()),
+        Refakatci_Gunu=("Durum", lambda s: (s == "Refakatçi").sum()),
+        Istirahat_Gunu=("Durum", lambda s: (s == "İstirahatli").sum()),
+        Ucretsiz_Izin_Gunu=("Durum", lambda s: (s == "Ücretsiz İzin").sum()),
+        Yillik_Izin_Gunu=("Durum", lambda s: (s == "Yıllık İzinli").sum()),
+        Diger_Gunu=("Durum", lambda s: (s == "Diğer").sum()),
+        Toplam_Saat=("Saat", "sum"),
+    ).reset_index()
+
+    agg["P_toplam"] = agg["Toplam_Takvim_Gunu"] - agg["Tatil_Gunu"]
+    agg["Devam_Orani"] = np.where(agg["P_toplam"] > 0, agg["Geldi_Gunu"] / agg["P_toplam"] * 100, np.nan)
+    return agg
 
 
-# ----------------------------------------------------------------------------
-# VERİ YÜKLEME (SIDEBAR)
-# ----------------------------------------------------------------------------
-st.sidebar.title("🏭 Puantaj Analiz Sistemi")
-st.sidebar.markdown("---")
-uploaded_file = st.sidebar.file_uploader(
-    "Puantaj Excel Dosyasını Yükleyin (.xlsx)", type=["xlsx"]
-)
+@st.cache_data(show_spinner="Excel dosyası işleniyor...")
+def process_excel_bytes(file_bytes: bytes) -> pd.DataFrame:
+    return load_excel_to_long(io.BytesIO(file_bytes))
 
-data_source = "mock"
-df = None
-error_msg = None
 
-if uploaded_file is not None:
-    try:
-        df = load_and_transform(uploaded_file)
-        data_source = "excel"
-    except Exception as e:
-        error_msg = str(e)
 
-if df is None:
-    df = generate_mock_data()
-    data_source = "mock"
+# =========================================================================================
+# 3) SIDEBAR - VERİ YÜKLEME VE AYARLAR
+# =========================================================================================
 
-if data_source == "excel":
-    st.sidebar.success(f"✅ Excel yüklendi: {df['Ay'].nunique()} ay, {df['Sicil No'].nunique()} personel")
-else:
-    if error_msg:
-        st.sidebar.error(f"Excel işlenemedi, örnek veri kullanılıyor.\n\nHata: {error_msg}")
-    else:
-        st.sidebar.info("📊 Dosya yüklenmedi — örnek (mock) veri gösteriliyor.")
+st.sidebar.header("⚙️ Ayarlar")
+uploaded_file = st.sidebar.file_uploader("📁 Puantaj Excel Dosyası Yükleyin (.xlsx)", type=["xlsx"])
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "Geldi sayılanlar: Geldi, Kozmetik, Ambalaj, Refakatçi.\n\n"
-    "Haftalık Tatil, gün sayımlarından hariç tutulur."
+    "ℹ️ 2026 yılına ait resmi tatil, bayram ve arife günleri otomatik olarak hesaba katılmıştır. "
+    "Pazar günleri de haftalık tatil olarak kabul edilip net iş gününden düşülür."
 )
 
-# Ay sırası (veride bulunanlara göre)
-mevcut_aylar = [a for a in AY_SIRA if a in df["Ay"].unique()]
-diger_aylar = [a for a in df["Ay"].unique() if a not in AY_SIRA]
-mevcut_aylar = mevcut_aylar + diger_aylar
+# --- Veri Yükleme ---
+kaynak = ""
+if uploaded_file is not None:
+    try:
+        file_bytes = uploaded_file.getvalue()
+        long_df = process_excel_bytes(file_bytes)
+        if long_df.empty:
+            st.sidebar.warning("⚠️ Dosyada okunabilir bir ay sekmesi bulunamadı. Örnek veri gösteriliyor.")
+            long_df = generate_mock_long_df()
+            kaynak = "Örnek (Mock) Veri"
+        else:
+            kaynak = f"Yüklenen Dosya: {uploaded_file.name}"
+    except Exception as e:
+        st.sidebar.error(f"❌ Excel dosyası işlenirken hata oluştu: {e}")
+        long_df = generate_mock_long_df()
+        kaynak = "Örnek (Mock) Veri"
+else:
+    long_df = generate_mock_long_df()
+    kaynak = "Örnek (Mock) Veri (Demo)"
 
-# ----------------------------------------------------------------------------
-# BAŞLIK
-# ----------------------------------------------------------------------------
+agg = aggregate_calisan_ay(long_df)
+ay_sira = agg[["Ay", "AyNo"]].drop_duplicates().sort_values("AyNo")["Ay"].tolist()
+
+
+# =========================================================================================
+# 4) BAŞLIK
+# =========================================================================================
+
 st.title("🏭 Fabrika Puantaj / Devam Analiz Sistemi")
+st.caption(f"📌 Veri kaynağı: **{kaynak}**  |  Toplam kayıt satırı: {len(long_df):,}")
 
-tab1, tab2 = st.tabs(["👤 Bireysel Personel Sorgulama", "🏭 Fabrika Geneli Dashboard"])
+if agg.empty:
+    st.error("Hesaplanacak veri bulunamadı. Lütfen Excel dosyanızın yapısını kontrol edin.")
+    st.stop()
 
-# ============================================================================
-# SEKME 1 — BİREYSEL PERSONEL SORGULAMA
-# ============================================================================
-with tab1:
-    personel_listesi = (
-        df[["Sicil No", "Ad Soyad"]]
-        .drop_duplicates()
-        .sort_values("Ad Soyad")
+
+# =========================================================================================
+# 5) BİREYSEL PERSONEL SORGULAMA (EN ÜSTTE)
+# =========================================================================================
+
+st.header("👤 Bireysel Personel Sorgulama")
+
+personel_liste = agg[["Sicil No", "Ad Soyad"]].drop_duplicates().copy()
+personel_liste["Ad Soyad"] = personel_liste["Ad Soyad"].astype(str).str.strip()
+personel_liste["Etiket"] = personel_liste["Sicil No"].astype(str) + " - " + personel_liste["Ad Soyad"]
+personel_liste = personel_liste.sort_values("Ad Soyad")
+
+col_f1, col_f2 = st.columns(2)
+with col_f1:
+    secili_etiket = st.selectbox(
+        "🔍 Personel Seçimi (Ad Soyad / Sicil No ile arayabilirsiniz)",
+        options=personel_liste["Etiket"].tolist(),
     )
-    personel_listesi["Etiket"] = personel_listesi["Sicil No"] + " — " + personel_listesi["Ad Soyad"]
+with col_f2:
+    secili_aylar = st.multiselect(
+        "🗓️ Ay / Dönem Filtresi (Bir veya Birden Fazla Ay Seçebilirsiniz)",
+        options=ay_sira,
+        default=ay_sira,
+        help="Seçtiğiniz ay(lar) aşağıdaki tüm KPI kartlarını, gün gün detay tablosunu ve çalışma türü grafiğini anında filtreler.",
+    )
 
-    col_f1, col_f2 = st.columns([2, 1])
-    with col_f1:
-        secili_etiket = st.selectbox(
-            "Personel Seçimi (Sicil No veya Ad Soyad ile arayabilirsiniz)",
-            options=personel_listesi["Etiket"].tolist(),
+secili_sicil = personel_liste.loc[personel_liste["Etiket"] == secili_etiket, "Sicil No"].iloc[0]
+
+# Seçilen personel ve seçilen ay(lar) birebir aynı filtreyle hem KPI'lara hem detay tablosuna uygulanır;
+# böylece "Tüm Aylar" (hiçbir ay çıkarılmamış hali) dahil her durumda tam senkronizasyon sağlanır.
+kisi_agg = agg[(agg["Sicil No"] == secili_sicil) & (agg["Ay"].isin(secili_aylar))]
+kisi_long = long_df[(long_df["Sicil No"] == secili_sicil) & (long_df["Ay"].isin(secili_aylar))]
+
+if not secili_aylar:
+    donem_etiketi = "Seçim Yok"
+elif set(secili_aylar) == set(ay_sira):
+    donem_etiketi = "Tüm Aylar"
+elif len(secili_aylar) <= 3:
+    donem_etiketi = ", ".join(secili_aylar)
+else:
+    donem_etiketi = f"{len(secili_aylar)} Ay Seçili"
+
+if not secili_aylar:
+    st.warning("⚠️ Lütfen en az bir ay seçiniz. Aşağıdaki metrikler ve tablo boş görünecektir.")
+
+p_toplam_k = kisi_agg["P_toplam"].sum()
+geldi_k = kisi_agg["Geldi_Gunu"].sum()
+istirahat_k = kisi_agg["Istirahat_Gunu"].sum()
+ucretsiz_k = kisi_agg["Ucretsiz_Izin_Gunu"].sum()
+yillik_k = kisi_agg["Yillik_Izin_Gunu"].sum()
+kozmetik_k = kisi_agg["Kozmetik_Gunu"].sum()
+ambalaj_k = kisi_agg["Ambalaj_Gunu"].sum()
+refakatci_k = kisi_agg["Refakatci_Gunu"].sum()
+standart_geldi_k = max(geldi_k - kozmetik_k - ambalaj_k - refakatci_k, 0)
+toplam_saat_k = kisi_agg["Toplam_Saat"].sum()
+devam_orani_k = (geldi_k / p_toplam_k * 100) if p_toplam_k > 0 else np.nan
+
+st.markdown(f"**Seçilen Personel:** {secili_etiket}  |  **Dönem:** {donem_etiketi}")
+
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+kpi1.metric(
+    "✅ Geldiği Gün Sayısı", f"{int(geldi_k)}",
+    help=(f"Standart Geldi: {int(standart_geldi_k)} | Kozmetik: {int(kozmetik_k)} | "
+          f"Ambalaj: {int(ambalaj_k)} | Refakatçi: {int(refakatci_k)} | Toplam Kayıtlı Saat: {toplam_saat_k:.1f} sa"),
+)
+kpi2.metric("🩺 İstirahat / Rapor Gün Sayısı", f"{int(istirahat_k)}")
+kpi3.metric(
+    "🌴 Ücretsiz / Yıllık İzin Sayısı", f"{int(ucretsiz_k + yillik_k)}",
+    help=f"Ücretsiz İzin: {int(ucretsiz_k)} | Yıllık İzinli: {int(yillik_k)}",
+)
+kpi4.metric("📈 Devam Performans Oranı", f"%{devam_orani_k:.1f}" if p_toplam_k > 0 else "N/A")
+
+st.subheader("📅 Gün Gün Katılım / Saat Detay Tablosu")
+
+detay = kisi_long[["AyNo", "Ay", "Gun", "Tarih", "Durum", "Saat", "TatilSebep"]].sort_values(["AyNo", "Gun"]).copy()
+detay = detay.drop(columns=["AyNo"]).rename(columns={
+    "Gun": "Gün", "Tarih": "Tarih", "Durum": "Durum", "Saat": "Çalışılan Saat", "TatilSebep": "Tatil Açıklaması",
+})
+
+
+def _renk_uygula(val):
+    return DURUM_RENK.get(val, "")
+
+
+styled_detay = detay.style.map(_renk_uygula, subset=["Durum"])
+st.dataframe(styled_detay, use_container_width=True, height=420)
+
+st.subheader("📊 Özel Çalışma Türü Dağılımı")
+
+tur_dagilim = pd.DataFrame({
+    "Tür": ["Standart Geldi", "Kozmetik", "Ambalaj", "Refakatçi"],
+    "Gün": [standart_geldi_k, kozmetik_k, ambalaj_k, refakatci_k],
+})
+fig_tur = px.bar(
+    tur_dagilim, x="Tür", y="Gün", text="Gün", color="Tür",
+    title=f"{secili_etiket} — Çalışma Türü Dağılımı ({donem_etiketi})",
+    color_discrete_sequence=["#2E8B57", "#3498DB", "#F39C12", "#9B59B6"],
+)
+fig_tur.update_layout(showlegend=False, xaxis_title="", yaxis_title="Gün Sayısı")
+st.plotly_chart(fig_tur, use_container_width=True)
+
+st.divider()
+
+
+# =========================================================================================
+# 6) ANALİZ DÖNEMİ FİLTRESİ + FABRİKA GENELİ ÖZET METRİKLER
+# =========================================================================================
+
+st.header("📊 Fabrika Geneli Özet")
+
+secili_donem_aylar = st.multiselect(
+    "📅 Analiz Dönemi (Bir veya Birden Fazla Ay Seçebilirsiniz)",
+    options=ay_sira,
+    default=ay_sira,
+    key="genel_ozet_donem",
+    help="Buradan seçtiğiniz dönem; aşağıdaki Fabrika Geneli Özet metriklerini, Top 5 İstirahatli/İzinli listesini, "
+         "Top 10/Bottom 10 grafiklerini ve izin dağılımı grafiğini birlikte günceller.",
+)
+
+if not secili_donem_aylar:
+    st.warning("⚠️ Lütfen en az bir ay seçiniz.")
+    agg_donem = agg.iloc[0:0]
+else:
+    agg_donem = agg[agg["Ay"].isin(secili_donem_aylar)]
+
+donem_etiketi_ozet = "Tüm Aylar" if (secili_donem_aylar and set(secili_donem_aylar) == set(ay_sira)) else (
+    "Seçim Yok" if not secili_donem_aylar else (
+        ", ".join(secili_donem_aylar) if len(secili_donem_aylar) <= 3 else f"{len(secili_donem_aylar)} Ay Seçili"
+    )
+)
+
+# NOT: "Toplam Aktif Çalışan" ve bağlı metrikler, tüm ayların toplamından değil,
+# yalnızca seçilen döneme (agg_donem) ait gerçek kayıtlardan hesaplanır.
+toplam_calisan = agg_donem["Sicil No"].nunique()
+genel_p_toplam = agg_donem["P_toplam"].sum()
+genel_p_geldi = agg_donem["Geldi_Gunu"].sum()
+fabrika_katilim_orani = (genel_p_geldi / genel_p_toplam * 100) if genel_p_toplam > 0 else np.nan
+toplam_rapor = agg_donem["Istirahat_Gunu"].sum()
+
+col1, col2, col3 = st.columns(3)
+col1.metric("👥 Toplam Aktif Çalışan", f"{toplam_calisan}", help=f"Dönem: {donem_etiketi_ozet}")
+col2.metric("✅ Fabrika Geneli Katılım Oranı", f"%{fabrika_katilim_orani:.1f}")
+col3.metric("🩺 Toplam Rapor/İstirahat Günü", f"{int(toplam_rapor)}")
+
+st.subheader("🏅 En Çok İstirahatli / İzinli Olan Top 5 Personel")
+st.caption(f"Dönem: {donem_etiketi_ozet}")
+
+top5_kategori = st.selectbox(
+    "Kategori",
+    ["Toplam (İstirahatli + İzin)", "İstirahatli", "Ücretsiz İzin", "Yıllık İzinli"],
+    key="top5_kategori",
+)
+
+if agg_donem.empty:
+    st.info("Top 5 listesini görüntülemek için en az bir ay seçiniz.")
+else:
+    kisi_ozet_rapor = agg_donem.groupby(["Sicil No", "Ad Soyad"]).agg(
+        Istirahat_Gunu=("Istirahat_Gunu", "sum"),
+        Ucretsiz_Izin_Gunu=("Ucretsiz_Izin_Gunu", "sum"),
+        Yillik_Izin_Gunu=("Yillik_Izin_Gunu", "sum"),
+    ).reset_index()
+    kisi_ozet_rapor["Ad Soyad"] = kisi_ozet_rapor["Ad Soyad"].astype(str).str.strip()
+    # Grafik Y ekseninde asla sicil no tek başına (sayısal) gösterilmesin diye metinsel Etiket kullanılır.
+    kisi_ozet_rapor["Etiket"] = kisi_ozet_rapor["Sicil No"].astype(str) + " - " + kisi_ozet_rapor["Ad Soyad"]
+
+    if top5_kategori == "Toplam (İstirahatli + İzin)":
+        kisi_ozet_rapor["Gun_Sayisi"] = (
+            kisi_ozet_rapor["Istirahat_Gunu"] + kisi_ozet_rapor["Ucretsiz_Izin_Gunu"] + kisi_ozet_rapor["Yillik_Izin_Gunu"]
         )
-    with col_f2:
-        ay_secimi = st.selectbox("Ay Seçimi", options=["Tüm Aylar"] + mevcut_aylar)
-
-    secili_sicil = secili_etiket.split(" — ")[0]
-
-    df_person = df[df["Sicil No"] == secili_sicil].copy()
-    if ay_secimi != "Tüm Aylar":
-        df_person = df_person[df_person["Ay"] == ay_secimi]
-
-    stats = calc_stats(df_person)
-
-    st.markdown("### 📌 Performans Özeti")
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(
-        "Geldiği Gün Sayısı",
-        stats["geldi"],
-        help=(f"Standart Geldi: {stats['standart']} | Kozmetik: {stats['kozmetik']} | "
-              f"Ambalaj: {stats['ambalaj']} | Refakatçi: {stats['refakatci']}"),
-    )
-    k2.metric("İstirahat / Rapor Gün Sayısı", stats["istirahat"])
-    k3.metric(
-        "Ücretsiz / Yıllık İzin Sayısı",
-        stats["ucretsiz_izin"] + stats["yillik_izin"],
-        help=f"Ücretsiz İzin: {stats['ucretsiz_izin']} | Yıllık İzin: {stats['yillik_izin']}",
-    )
-    k4.metric("Devam Performans Oranı (%)", f"%{stats['katilim_orani']}")
-
-    st.caption(
-        f"Toplam Kayıtlı Gün: {stats['toplam_kayitli']} | Haftalık Tatil (hariç): {stats['haftalik_tatil']} "
-        f"| Net İş Günü (P_toplam): {stats['p_toplam']}"
-    )
-
-    st.markdown("---")
-    st.markdown("### 📅 Çalışma Detay Kartı")
-
-    col_d1, col_d2 = st.columns([1.4, 1])
-
-    with col_d1:
-        st.markdown("**Gün Gün Katılım Durumu**")
-        gorunum = (
-            df_person.rename(columns={"Durum_Norm": "Durum"})
-            [["Ay", "Gün/Tarih", "Durum"]]
-        )
-        if "Sıra" in df_person.columns:
-            gorunum["Sıra"] = df_person["Sıra"].values
-            gorunum["_ay_sira"] = gorunum["Ay"].apply(lambda a: mevcut_aylar.index(a) if a in mevcut_aylar else 99)
-            gorunum = gorunum.sort_values(["_ay_sira", "Sıra"]).drop(columns=["_ay_sira", "Sıra"])
-
-        if gorunum.empty:
-            st.info("Seçilen periyot için veri bulunamadı.")
-        else:
-            gorunum = gorunum.loc[:, ~gorunum.columns.duplicated()].reset_index(drop=True)
-            styled = gorunum.style.map(style_durum, subset=["Durum"])
-            st.dataframe(styled, use_container_width=True, hide_index=True, height=420)
-
-    with col_d2:
-        st.markdown("**Özel Çalışma Türü Dağılımı**")
-        dagilim = pd.DataFrame({
-            "Tür": ["Standart Geldi", "Kozmetik", "Ambalaj", "Refakatçi"],
-            "Gün Sayısı": [stats["standart"], stats["kozmetik"], stats["ambalaj"], stats["refakatci"]],
-        })
-        dagilim = dagilim[dagilim["Gün Sayısı"] > 0]
-        if dagilim.empty:
-            st.info("Bu periyotta özel çalışma türü kaydı yok.")
-        else:
-            fig_dagilim = px.bar(
-                dagilim, x="Tür", y="Gün Sayısı", color="Tür", text="Gün Sayısı",
-                title="Çalışma Türü Kırılımı",
-            )
-            fig_dagilim.update_layout(showlegend=False)
-            st.plotly_chart(fig_dagilim, use_container_width=True)
-
-# ============================================================================
-# SEKME 2 — FABRİKA GENELİ DASHBOARD
-# ============================================================================
-with tab2:
-    st.markdown("### 🏭 Fabrika Geneli Özet")
-
-    ay_secimi_dash = st.multiselect(
-        "Ay Filtresi (boş bırakılırsa tüm aylar dahil edilir)",
-        options=mevcut_aylar, default=[],
-    )
-    df_dash = df if not ay_secimi_dash else df[df["Ay"].isin(ay_secimi_dash)]
-
-    genel_stats = calc_stats(df_dash)
-    toplam_calisan = df_dash["Sicil No"].nunique()
-
-    g1, g2, g3 = st.columns(3)
-    g1.metric("Toplam Aktif Çalışan Sayısı", toplam_calisan)
-    g2.metric("Fabrika Geneli Katılım Oranı (%)", f"%{genel_stats['katilim_orani']}")
-    g3.metric("Toplam Alınan Rapor / İstirahat Günü", genel_stats["istirahat"])
-
-    st.markdown("---")
-
-    emp_stats = per_employee_stats(df_dash)
-
-    st.markdown("#### 🏆 En Yüksek & En Düşük Performanslı Çalışanlar")
-    col_top, col_bottom = st.columns(2)
-
-    if not emp_stats.empty:
-        emp_sirali = emp_stats.sort_values("katilim_orani", ascending=False)
-        top10 = emp_sirali.head(10).sort_values("katilim_orani")
-        bottom10 = emp_sirali.tail(10).sort_values("katilim_orani")
-
-        with col_top:
-            fig_top = px.bar(
-                top10, x="katilim_orani", y="Ad Soyad", orientation="h",
-                text="katilim_orani", title="Top 10 — En Yüksek Katılım Oranı (%)",
-                labels={"katilim_orani": "Katılım Oranı (%)", "Ad Soyad": ""},
-                color_discrete_sequence=["#2ca02c"],
-            )
-            st.plotly_chart(fig_top, use_container_width=True)
-
-        with col_bottom:
-            fig_bottom = px.bar(
-                bottom10, x="katilim_orani", y="Ad Soyad", orientation="h",
-                text="katilim_orani", title="Bottom 10 — En Düşük Katılım Oranı (%)",
-                labels={"katilim_orani": "Katılım Oranı (%)", "Ad Soyad": ""},
-                color_discrete_sequence=["#d62728"],
-            )
-            st.plotly_chart(fig_bottom, use_container_width=True)
+    elif top5_kategori == "İstirahatli":
+        kisi_ozet_rapor["Gun_Sayisi"] = kisi_ozet_rapor["Istirahat_Gunu"]
+    elif top5_kategori == "Ücretsiz İzin":
+        kisi_ozet_rapor["Gun_Sayisi"] = kisi_ozet_rapor["Ucretsiz_Izin_Gunu"]
     else:
-        st.info("Seçilen filtrelere uygun veri bulunamadı.")
+        kisi_ozet_rapor["Gun_Sayisi"] = kisi_ozet_rapor["Yillik_Izin_Gunu"]
 
-    st.markdown("---")
-    st.markdown("#### 📈 Aylara Göre Rapor / İstirahat Trendi")
+    top5_rapor = kisi_ozet_rapor[kisi_ozet_rapor["Gun_Sayisi"] > 0].sort_values("Gun_Sayisi", ascending=False).head(5)
 
-    aylik_trend = (
-        df_dash[df_dash["Durum_Norm"] == "İstirahatli"]
-        .groupby("Ay").size().reindex(mevcut_aylar).fillna(0).reset_index(name="İstirahat Gün Sayısı")
-    )
-    fig_trend = px.line(
-        aylik_trend, x="Ay", y="İstirahat Gün Sayısı", markers=True,
-        title="Aylık İstirahat / Rapor Gün Sayısı Trendi",
-    )
-    st.plotly_chart(fig_trend, use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("#### 🥯 Devamsızlık ve İzin Dağılımı")
-
-    dagilim_pie = pd.DataFrame({
-        "Kategori": ["İstirahatli", "Ücretsiz İzin", "Yıllık İzinli", "Resmi Tatil"],
-        "Gün Sayısı": [genel_stats["istirahat"], genel_stats["ucretsiz_izin"],
-                        genel_stats["yillik_izin"], genel_stats["resmi_tatil"]],
-    })
-    dagilim_pie = dagilim_pie[dagilim_pie["Gün Sayısı"] > 0]
-
-    if dagilim_pie.empty:
-        st.info("Bu periyotta devamsızlık/izin kaydı bulunamadı.")
+    if top5_rapor.empty:
+        st.info("Seçili kriterlere uyan bir kayıt bulunmuyor.")
     else:
-        fig_pie = px.pie(
-            dagilim_pie, names="Kategori", values="Gün Sayısı", hole=0.5,
-            title="Devamsızlık / İzin Türü Dağılımı",
+        top5_rapor_sirali = top5_rapor.sort_values("Gun_Sayisi")
+        fig_top5_rapor = px.bar(
+            top5_rapor_sirali, x="Gun_Sayisi", y="Etiket", orientation="h",
+            title=None, text="Gun_Sayisi",
+            color_discrete_sequence=["#E67E22"],
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        fig_top5_rapor.update_traces(texttemplate="%{text:.0f} gün")
+        fig_top5_rapor.update_layout(xaxis_title="Gün Sayısı", yaxis_title="", height=320)
+        fig_top5_rapor.update_yaxes(type="category", categoryorder="array", categoryarray=top5_rapor_sirali["Etiket"].tolist())
+        st.plotly_chart(fig_top5_rapor, use_container_width=True)
 
-    st.markdown("---")
-    with st.expander("📋 Detaylı Personel Tablosu"):
-        if not emp_stats.empty:
-            gosterim = emp_stats.rename(columns={
-                "Sicil No": "Sicil No", "Ad Soyad": "Ad Soyad",
-                "geldi": "Geldi", "istirahat": "İstirahatli",
-                "ucretsiz_izin": "Ücretsiz İzin", "yillik_izin": "Yıllık İzinli",
-                "p_toplam": "Net İş Günü", "katilim_orani": "Katılım Oranı (%)",
-            })[["Sicil No", "Ad Soyad", "Geldi", "İstirahatli", "Ücretsiz İzin",
-                "Yıllık İzinli", "Net İş Günü", "Katılım Oranı (%)"]]
-            st.dataframe(gosterim.sort_values("Katılım Oranı (%)", ascending=False),
-                         use_container_width=True, hide_index=True)
+st.divider()
+
+
+# =========================================================================================
+# 7) FABRİKA GENELİ ANALİZ GRAFİKLERİ
+# =========================================================================================
+
+st.subheader("📈 Fabrika Geneli Analiz Grafikleri")
+st.caption(f"Top 10/Bottom 10 performans ve izin dağılımı grafikleri seçili döneme ({donem_etiketi_ozet}) göre hesaplanır.")
+
+kisi_ozet = agg_donem.groupby(["Sicil No", "Ad Soyad"]).agg(
+    P_toplam=("P_toplam", "sum"),
+    Geldi_Gunu=("Geldi_Gunu", "sum"),
+    Istirahat_Gunu=("Istirahat_Gunu", "sum"),
+    Ucretsiz_Izin_Gunu=("Ucretsiz_Izin_Gunu", "sum"),
+    Yillik_Izin_Gunu=("Yillik_Izin_Gunu", "sum"),
+).reset_index()
+kisi_ozet["Devam_Orani"] = np.where(kisi_ozet["P_toplam"] > 0, kisi_ozet["Geldi_Gunu"] / kisi_ozet["P_toplam"] * 100, np.nan)
+
+# ÖNEMLİ: Grafiklerin Y ekseninde ASLA sicil no tek başına (sayısal) gösterilmemeli.
+# "Sicil No - Ad Soyad" formatında, kesinlikle metinsel (string) bir Etiket sütunu oluşturuyoruz.
+kisi_ozet["Ad Soyad"] = kisi_ozet["Ad Soyad"].astype(str).str.strip()
+kisi_ozet["Etiket"] = kisi_ozet["Sicil No"].astype(str) + " - " + kisi_ozet["Ad Soyad"]
+
+top10 = kisi_ozet.dropna(subset=["Devam_Orani"]).sort_values("Devam_Orani", ascending=False).head(10)
+bottom10 = kisi_ozet.dropna(subset=["Devam_Orani"]).sort_values("Devam_Orani", ascending=True).head(10)
+
+col_a, col_b = st.columns(2)
+with col_a:
+    top10_sirali = top10.sort_values("Devam_Orani")
+    fig_top = px.bar(
+        top10_sirali, x="Devam_Orani", y="Etiket", orientation="h",
+        title="🏆 En Yüksek Performanslı Çalışanlar (Top 10)", text="Devam_Orani",
+        color_discrete_sequence=["#2E8B57"],
+    )
+    fig_top.update_traces(texttemplate="%{text:.1f}%")
+    fig_top.update_layout(xaxis_title="Devam Oranı (%)", yaxis_title="")
+    fig_top.update_yaxes(type="category", categoryorder="array", categoryarray=top10_sirali["Etiket"].tolist())
+    st.plotly_chart(fig_top, use_container_width=True)
+
+with col_b:
+    bottom10_sirali = bottom10.sort_values("Devam_Orani", ascending=False)
+    fig_bottom = px.bar(
+        bottom10_sirali, x="Devam_Orani", y="Etiket", orientation="h",
+        title="⬇️ En Düşük Performanslı Çalışanlar (Bottom 10)", text="Devam_Orani",
+        color_discrete_sequence=["#C0392B"],
+    )
+    fig_bottom.update_traces(texttemplate="%{text:.1f}%")
+    fig_bottom.update_layout(xaxis_title="Devam Oranı (%)", yaxis_title="")
+    fig_bottom.update_yaxes(type="category", categoryorder="array", categoryarray=bottom10_sirali["Etiket"].tolist())
+    st.plotly_chart(fig_bottom, use_container_width=True)
+
+dagilim = pd.DataFrame({
+    "Kategori": ["İstirahatli / Rapor", "Ücretsiz İzin", "Yıllık İzinli"],
+    "Gün": [agg_donem["Istirahat_Gunu"].sum(), agg_donem["Ucretsiz_Izin_Gunu"].sum(), agg_donem["Yillik_Izin_Gunu"].sum()],
+})
+fig_pie = px.pie(
+    dagilim, names="Kategori", values="Gün", hole=0.45,
+    title=f"🥧 Devamsızlık ve İzin Dağılımı ({donem_etiketi_ozet})",
+    color_discrete_sequence=["#E74C3C", "#F39C12", "#3498DB"],
+)
+st.plotly_chart(fig_pie, use_container_width=True)
+
+st.divider()
+
+
+# =========================================================================================
+# 8) AYLARA GÖRE TREND GRAFİKLERİ (Dinamik Ay Aralığı Filtresi)
+# =========================================================================================
+
+st.subheader("📉 Aylara Göre Trend Grafikleri")
+
+trend_ay_secimi = st.multiselect(
+    "🗓️ Trend Grafikleri için Ay Aralığı Seçiniz",
+    options=ay_sira,
+    default=ay_sira,
+    help="Buradan seçtiğiniz aylara göre aşağıdaki iki trend grafiği dinamik olarak daraltılır/güncellenir.",
+)
+
+if not trend_ay_secimi:
+    st.info("Trend grafiklerini görüntülemek için en az bir ay seçiniz.")
+else:
+    ay_ozet = agg[agg["Ay"].isin(trend_ay_secimi)].groupby(["Ay", "AyNo"]).agg(
+        Istirahat_Gunu=("Istirahat_Gunu", "sum"),
+        P_toplam=("P_toplam", "sum"),
+        Geldi_Gunu=("Geldi_Gunu", "sum"),
+    ).reset_index().sort_values("AyNo")
+    ay_ozet["Devam_Orani"] = np.where(ay_ozet["P_toplam"] > 0, ay_ozet["Geldi_Gunu"] / ay_ozet["P_toplam"] * 100, np.nan)
+
+    col_c, col_d = st.columns(2)
+    with col_c:
+        fig_rapor = px.bar(
+            ay_ozet, x="Ay", y="Istirahat_Gunu", title="🩺 Aylara Göre Rapor/İstirahat Trendi",
+            text="Istirahat_Gunu", color_discrete_sequence=["#5DADE2"],
+        )
+        fig_rapor.update_layout(xaxis_title="", yaxis_title="İstirahat/Rapor Gün Sayısı")
+        st.plotly_chart(fig_rapor, use_container_width=True)
+
+    with col_d:
+        fig_devam = px.line(
+            ay_ozet, x="Ay", y="Devam_Orani", markers=True,
+            title="📈 Aylara Göre Fabrika Geneli Devam Oranı Trendi",
+        )
+        fig_devam.update_traces(line_color="#8E44AD")
+        fig_devam.update_layout(xaxis_title="", yaxis_title="Devam Oranı (%)")
+        st.plotly_chart(fig_devam, use_container_width=True)
