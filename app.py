@@ -745,3 +745,63 @@ else:
         fig_devam.update_traces(line_color="#8E44AD")
         fig_devam.update_layout(xaxis_title="", yaxis_title="Devam Oranı (%)")
         st.plotly_chart(fig_devam, use_container_width=True)
+
+
+
+
+
+def hesapla_bradford_puantaj(df):
+  sicil_col = df.columns[0]
+  ad_col = df.columns[1]
+  gun_sutunlari = df.columns[2:33]
+
+  melted_df = df.melt(
+      id_vars=[sicil_col, ad_col],
+      value_vars=gun_sutunlari,
+      var_name='Gun',
+      value_name='Durum',
+  )
+  melted_df['Durum_Str'] = melted_df['Durum'].astype(str).str.lower().str.strip()
+  rapor_df = melted_df[melted_df['Durum_Str'] == 'ist'].copy()
+
+  bradford_ozet = (
+      rapor_df.groupby([sicil_col, ad_col])
+      .agg(S=('Gun', 'nunique'), D=('Gun', 'count'))
+      .reset_index()
+  )
+
+  tum_personel = df[[sicil_col, ad_col]].drop_duplicates()
+  bradford_ozet = pd.merge(
+      tum_personel, bradford_ozet, on=[sicil_col, ad_col], how='left'
+  ).fillna(0)
+
+  bradford_ozet['Bradford_Skoru'] = (
+      bradford_ozet['S'] ** 2
+  ) * bradford_ozet['D']
+
+  def risk_seviyesi(skor):
+    if skor == 0:
+      return 'Risksiz'
+    elif skor < 50:
+      return 'Düşük Risk'
+    elif skor < 200:
+      return 'Orta Risk / Takip Edilmeli'
+    else:
+      return 'Yüksek Risk / Kronik Devamsızlık'
+
+  bradford_ozet['Risk_Durumu'] = bradford_ozet['Bradford_Skoru'].apply(
+      risk_seviyesi
+  )
+  return bradford_ozet.sort_values(by='Bradford_Skoru', ascending=False)
+
+
+# Arayüze eklenecek kısım:
+st.subheader('📊 Bradford Faktörü ile Kronik Devamsızlık Analizi')
+st.markdown(
+    'Puantaj tablosundaki **ist** (istirahat) verileri üzerinden sık ve kısa'
+    ' süreli devamsızlıklar analiz edilir.'
+)
+
+if 'df' in locals():
+  sonuc_df = hesapla_bradford_puantaj(df)
+  st.dataframe(sonuc_df, use_container_width=True)
