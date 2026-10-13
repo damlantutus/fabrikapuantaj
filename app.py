@@ -803,25 +803,22 @@ st.markdown(
 )
 
 try:
-  # Projende Excel verisinin yüklendiği değişken adını buraya yazabilirsin.
-  # Eğer sol panelden dosya okunuyorsa değişken adın büyük ihtimalle farklıdır.
-  if "df" in globals():
-    aktif_df = df
+  # Sol panelden yüklenen dosyayı Pandas ile DataFrame'e çevirelim
+  # (Burada uploaded_file yerine senin projendeki file_uploader değişken adı neyse onu yazabilirsin,
+  # genelde 'uploaded_file' veya 'dosya' olur)
+  if "uploaded_file" in locals() and uploaded_file is not None:
+    # Aktif seçilen veya yüklenen Excel'i okuyoruz
+    aktif_df = pd.read_excel(uploaded_file)
   elif "df" in locals():
     aktif_df = df
-  elif "data" in locals():
-    aktif_df = data
   else:
-    aktif_df = (
-        uploaded_file  # Sık kullanılan yükleme değişken adı alternatifi
-    )
+    # Eğer yukarıdakiler yoksa doğrudan varsayılan excel dosyasını okutalım
+    aktif_df = pd.read_excel("işçilik-2026.xlsx")
 
   sonuc_df = hesapla_bradford_puantaj(aktif_df)
   st.dataframe(sonuc_df, use_container_width=True)
 
 except Exception as e:
-  # Hangi hatayı aldığımızı doğrudan ekranda görelim:
   st.error(
-      f"Hata Detayı: {e} — (Lütfen df değişken adını veya dosya okuma satırını"
-      " kontrol edin)"
+      f"Hata Detayı: {e} — (Lütfen Excel dosyasının yüklü olduğundan emin olun)"
   )
