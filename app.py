@@ -803,18 +803,25 @@ st.markdown(
 )
 
 try:
+  # Projende Excel verisinin yüklendiği değişken adını buraya yazabilirsin.
+  # Eğer sol panelden dosya okunuyorsa değişken adın büyük ihtimalle farklıdır.
   if "df" in globals():
     aktif_df = df
   elif "df" in locals():
     aktif_df = df
-  else:
+  elif "data" in locals():
     aktif_df = data
+  else:
+    aktif_df = (
+        uploaded_file  # Sık kullanılan yükleme değişken adı alternatifi
+    )
 
   sonuc_df = hesapla_bradford_puantaj(aktif_df)
   st.dataframe(sonuc_df, use_container_width=True)
 
 except Exception as e:
-  st.info(
-      "Tablonun yüklenmesi için lütfen sol menüden Excel dosyasını seçin veya"
-      " güncelleyin."
+  # Hangi hatayı aldığımızı doğrudan ekranda görelim:
+  st.error(
+      f"Hata Detayı: {e} — (Lütfen df değişken adını veya dosya okuma satırını"
+      " kontrol edin)"
   )
