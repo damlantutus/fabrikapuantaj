@@ -805,3 +805,32 @@ st.markdown(
 if 'df' in locals():
   sonuc_df = hesapla_bradford_puantaj(df)
   st.dataframe(sonuc_df, use_container_width=True)
+    st.subheader("📊 Bradford Faktörü ile Kronik Devamsızlık Analizi")
+st.markdown(
+    "Puantaj tablosundaki **ist** (istirahat) verileri üzerinden sık ve kısa"
+    " süreli devamsızlıklar analiz edilir."
+)
+
+try:
+  # Projende kullanılan veri değişkeninin adını buraya yazabilirsin (örn: df)
+  if "df" in globals():
+    aktif_df = df
+  elif "df" in locals():
+    aktif_df = df
+  else:
+    # Eğer tablo başka bir değişkendeyse buraya yazılır
+    aktif_df = (
+        dx  # (Eğer veri değişkeninin adı farklıysa örn: data, df_temmuz vb.)
+    )
+
+  sonuc_df = hesapla_bradford_puantaj(aktif_df)
+  st.dataframe(sonuc_df, use_container_width=True)
+
+except Exception as e:
+  st.info(
+      "Tablonun yüklenmesi için lütfen sol menüden Excel dosyasını seçin veya"
+      " güncelleyin."
+  )
+  # Hangi hatayı aldığını görmek istersen alttaki satırın başındaki # işaretini kaldırabilirsin:
+  # st.error(f"Hata detayı: {e}")
+
