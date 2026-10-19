@@ -751,30 +751,45 @@ else:
 
 
 def hesapla_bradford_puantaj(df):
+  # Sicil, Ad ve Soyad sütunlarını tanımlıyoruz
   sicil_col = df.columns[0]
   ad_col = df.columns[1]
-  gun_sutunlari = df.columns[2:33]
+  soyad_col = df.columns[2]
 
+  # Ad ve Soyadı birleştirip tek sütun yapıyoruz ki ekranda ad soyad birlikte görünsün
+  df['Ad_Soyad'] = df[ad_col].astype(str).str.strip() + ' ' + df[soyad_col].astype(str).str.strip()
+
+  # Gün sütunları (1'den 31'e kadar olan sütunlar)
+  gun_sutunlari = df.columns[3:34]
+
+  # Tabloyu yataydan dikey formata çeviriyoruz
   melted_df = df.melt(
-      id_vars=[sicil_col, ad_col],
+      id_vars=[sicil_col, 'Ad_Soyad'],
       value_vars=gun_sutunlari,
       var_name='Gun',
       value_name='Durum',
   )
-  melted_df['Durum_Str'] = melted_df['Durum'].astype(str).str.lower().str.strip()
-  rapor_df = melted_df[melted_df['Durum_Str'] == 'ist'].copy()
 
+  # Durumları küçük harfe çevirip 'i̇st' (istirahat/rapor) olanları filtreliyoruz
+  melted_df['Durum_Str'] = melted_df['Durum'].astype(str).str.lower().str.strip()
+  
+  # Türkçe karakter esnekliğiyle 'ist' veya 'i̇st' yakalama
+  rapor_df = melted_df[melted_df['Durum_Str'].str.contains('ist', na=False)].copy()
+
+  # S: Farklı günlerdeki rapor sayısı (vaka/sefer adedi), D: Toplam rapor günü
   bradford_ozet = (
-      rapor_df.groupby([sicil_col, ad_col])
+      rapor_df.groupby([sicil_col, 'Ad_Soyad'])
       .agg(S=('Gun', 'nunique'), D=('Gun', 'count'))
       .reset_index()
   )
 
-  tum_personel = df[[sicil_col, ad_col]].drop_duplicates()
+  # Tüm personeli ekleyip hiç rapor almayanların skorunu 0 yapıyoruz
+  tum_personel = df[[sicil_col, 'Ad_Soyad']].drop_duplicates()
   bradford_ozet = pd.merge(
-      tum_personel, bradford_ozet, on=[sicil_col, ad_col], how='left'
+      tum_personel, bradford_ozet, on=[sicil_col, 'Ad_Soyad'], how='left'
   ).fillna(0)
 
+  # Bradford Skoru Formülü: B = S^2 * D
   bradford_ozet['Bradford_Skoru'] = (
       bradford_ozet['S'] ** 2
   ) * bradford_ozet['D']
@@ -792,31 +807,48 @@ def hesapla_bradford_puantaj(df):
   bradford_ozet['Risk_Durumu'] = bradford_ozet['Bradford_Skoru'].apply(
       risk_seviyesi
   )
+  
+  # Kolon isimlerini Türkçeleştirip düzenli bir sıra veriyoruz
+  bradford_ozet = bradford_ozet.rename(columns={
+      sicil_col: 'Sicil No',
+      'S': 'Rapor Adedi (S)',
+      'D': 'Toplam Gün (D)'
+  })
+
   return bradford_ozet.sort_values(by='Bradford_Skoru', ascending=False)
 
 
-# Arayüze eklenecek kısım:
+# Streamlit Arayüz Kısmı
 st.subheader("📊 Bradford Faktörü ile Kronik Devamsızlık Analizi")
 st.markdown(
-    "Puantaj tablosundaki **ist** (istirahat) verileri üzerinden sık ve kısa"
+    "Puantaj tablosundaki **istirahat (ist)** verileri üzerinden sık ve kısa"
     " süreli devamsızlıklar analiz edilir."
 )
 
 try:
-  # Sol panelden yüklenen dosyayı Pandas ile DataFrame'e çevirelim
-  # (Burada uploaded_file yerine senin projendeki file_uploader değişken adı neyse onu yazabilirsin,
-  # genelde 'uploaded_file' veya 'dosya' olur)
-  if "uploaded_file" in locals() and uploaded_file is not None:
-    # Aktif seçilen veya yüklenen Excel'i okuyoruz
-    aktif_df = pd.read_excel(uploaded_file)
+  if "df" in globals():
+    aktif_df = df
   elif "df" in locals():
     aktif_df = df
   else:
-    # Eğer yukarıdakiler yoksa doğrudan varsayılan excel dosyasını okutalım
     aktif_df = pd.read_excel("işçilik-2026.xlsx")
 
   sonuc_df = hesapla_bradford_puantaj(aktif_df)
+  
+  # Sadece riskli veya tüm personeli filtreleme seçeneği
+  secilen_risk = st.selectbox(
+      "Risk Durumuna Göre Filtrele",
+      options=["Tümü", "Yüksek Risk / Kronik Devamsızlık", "Orta Risk / Takip Edilmeli", "Düşük Risk", "Risksiz"]
+  )
+
+  if secilen_risk != "Tümü":
+    sonuc_df = sonuc_df[sonuc_df['Risk_Durumu'] == secilen_risk]
+
   st.dataframe(sonuc_df, use_container_width=True)
+
+except Exception as e:
+  st.error(f"Hata Detayı: {e}")
+
 
 except Exception as e:
   st.error(
