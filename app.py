@@ -750,6 +750,10 @@ else:
 
 
 
+import pandas as pd
+import streamlit as st
+
+
 def hesapla_bradford_puantaj(df):
   # Sicil, Ad ve Soyad sütunlarını tanımlıyoruz
   sicil_col = df.columns[0]
@@ -757,7 +761,11 @@ def hesapla_bradford_puantaj(df):
   soyad_col = df.columns[2]
 
   # Ad ve Soyadı birleştirip tek sütun yapıyoruz ki ekranda ad soyad birlikte görünsün
-  df['Ad_Soyad'] = df[ad_col].astype(str).str.strip() + ' ' + df[soyad_col].astype(str).str.strip()
+  df['Ad_Soyad'] = (
+      df[ad_col].astype(str).str.strip()
+      + ' '
+      + df[soyad_col].astype(str).str.strip()
+  )
 
   # Gün sütunları (1'den 31'e kadar olan sütunlar)
   gun_sutunlari = df.columns[3:34]
@@ -772,8 +780,6 @@ def hesapla_bradford_puantaj(df):
 
   # Durumları küçük harfe çevirip 'i̇st' (istirahat/rapor) olanları filtreliyoruz
   melted_df['Durum_Str'] = melted_df['Durum'].astype(str).str.lower().str.strip()
-  
-  # Türkçe karakter esnekliğiyle 'ist' veya 'i̇st' yakalama
   rapor_df = melted_df[melted_df['Durum_Str'].str.contains('ist', na=False)].copy()
 
   # S: Farklı günlerdeki rapor sayısı (vaka/sefer adedi), D: Toplam rapor günü
@@ -807,47 +813,62 @@ def hesapla_bradford_puantaj(df):
   bradford_ozet['Risk_Durumu'] = bradford_ozet['Bradford_Skoru'].apply(
       risk_seviyesi
   )
-  
+
   # Kolon isimlerini Türkçeleştirip düzenli bir sıra veriyoruz
-  bradford_ozet = bradford_ozet.rename(columns={
-      sicil_col: 'Sicil No',
-      'S': 'Rapor Adedi (S)',
-      'D': 'Toplam Gün (D)'
-  })
+  bradford_ozet = bradford_ozet.rename(
+      columns={
+          sicil_col: 'Sicil No',
+          'S': 'Rapor Adedi (S)',
+          'D': 'Toplam Gün (D)',
+      }
+  )
 
   return bradford_ozet.sort_values(by='Bradford_Skoru', ascending=False)
 
 
 # Streamlit Arayüz Kısmı
-st.subheader("📊 Bradford Faktörü ile Kronik Devamsızlık Analizi")
+st.subheader('📊 Bradford Faktörü ile Kronik Devamsızlık Analizi')
 st.markdown(
-    "Puantaj tablosundaki **istirahat (ist)** verileri üzerinden sık ve kısa"
-    " süreli devamsızlıklar analiz edilir."
+    'Puantaj tablosundaki **istirahat (ist)** verileri üzerinden sık ve kısa'
+    ' süreli devamsızlıklar analiz edilir.'
 )
 
 try:
-  if "df" in globals():
+  # Sol panelden yüklenen dosyayı dinamik olarak yakalayıp okuyoruz
+  if 'uploaded_file' in locals() and uploaded_file is not None:
+    aktif_df = pd.read_excel(uploaded_file)
+  elif 'dosya' in locals() and dosya is not None:
+    aktif_df = pd.read_excel(dosya)
+  elif 'df' in globals():
     aktif_df = df
-  elif "df" in locals():
+  elif 'df' in locals():
     aktif_df = df
   else:
-    aktif_df = pd.read_excel("işçilik-2026.xlsx")
+    aktif_df = None
 
-  sonuc_df = hesapla_bradford_puantaj(aktif_df)
-  
-  # Sadece riskli veya tüm personeli filtreleme seçeneği
-  secilen_risk = st.selectbox(
-      "Risk Durumuna Göre Filtrele",
-      options=["Tümü", "Yüksek Risk / Kronik Devamsızlık", "Orta Risk / Takip Edilmeli", "Düşük Risk", "Risksiz"]
-  )
+  if aktif_df is not None:
+    sonuc_df = hesapla_bradford_puantaj(aktif_df)
 
-  if secilen_risk != "Tümü":
-    sonuc_df = sonuc_df[sonuc_df['Risk_Durumu'] == secilen_risk]
+    secilen_risk = st.selectbox(
+        'Risk Durumuna Göre Filtrele',
+        options=[
+            'Tümü',
+            'Yüksek Risk / Kronik Devamsızlık',
+            'Orta Risk / Takip Edilmeli',
+            'Düşük Risk',
+            'Risksiz',
+        ],
+    )
 
-  st.dataframe(sonuc_df, use_container_width=True)
+    if secilen_risk != 'Tümü':
+      sonuc_df = sonuc_df[sonuc_df['Risk_Durumu'] == secilen_risk]
+
+    st.dataframe(sonuc_df, use_container_width=True)
+  else:
+    st.warning('Lütfen sol panelden Excel dosyanızı yükleyin.')
 
 except Exception as e:
-  st.error(f"Hata Detayı: {e}")
+  st.error(f'Hata Detayı: {e}')
 
 
 except Exception as e:
