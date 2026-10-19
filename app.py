@@ -750,98 +750,17 @@ else:
 
 
 
-import pandas as pd
-import streamlit as st
-
-
-def hesapla_bradford_puantaj(df):
-  # Sicil, Ad ve Soyad sütunlarını tanımlıyoruz
-  sicil_col = df.columns[0]
-  ad_col = df.columns[1]
-  soyad_col = df.columns[2]
-
-  # Ad ve Soyadı birleştirip tek sütun yapıyoruz ki ekranda ad soyad birlikte görünsün
-  df['Ad_Soyad'] = (
-      df[ad_col].astype(str).str.strip()
-      + ' '
-      + df[soyad_col].astype(str).str.strip()
-  )
-
-  # Gün sütunları (1'den 31'e kadar olan sütunlar)
-  gun_sutunlari = df.columns[3:34]
-
-  # Tabloyu yataydan dikey formata çeviriyoruz
-  melted_df = df.melt(
-      id_vars=[sicil_col, 'Ad_Soyad'],
-      value_vars=gun_sutunlari,
-      var_name='Gun',
-      value_name='Durum',
-  )
-
-  # Durumları küçük harfe çevirip 'i̇st' (istirahat/rapor) olanları filtreliyoruz
-  melted_df['Durum_Str'] = melted_df['Durum'].astype(str).str.lower().str.strip()
-  rapor_df = melted_df[melted_df['Durum_Str'].str.contains('ist', na=False)].copy()
-
-  # S: Farklı günlerdeki rapor sayısı (vaka/sefer adedi), D: Toplam rapor günü
-  bradford_ozet = (
-      rapor_df.groupby([sicil_col, 'Ad_Soyad'])
-      .agg(S=('Gun', 'nunique'), D=('Gun', 'count'))
-      .reset_index()
-  )
-
-  # Tüm personeli ekleyip hiç rapor almayanların skorunu 0 yapıyoruz
-  tum_personel = df[[sicil_col, 'Ad_Soyad']].drop_duplicates()
-  bradford_ozet = pd.merge(
-      tum_personel, bradford_ozet, on=[sicil_col, 'Ad_Soyad'], how='left'
-  ).fillna(0)
-
-  # Bradford Skoru Formülü: B = S^2 * D
-  bradford_ozet['Bradford_Skoru'] = (
-      bradford_ozet['S'] ** 2
-  ) * bradford_ozet['D']
-
-  def risk_seviyesi(skor):
-    if skor == 0:
-      return 'Risksiz'
-    elif skor < 50:
-      return 'Düşük Risk'
-    elif skor < 200:
-      return 'Orta Risk / Takip Edilmeli'
-    else:
-      return 'Yüksek Risk / Kronik Devamsızlık'
-
-  bradford_ozet['Risk_Durumu'] = bradford_ozet['Bradford_Skoru'].apply(
-      risk_seviyesi
-  )
-
-  # Kolon isimlerini Türkçeleştirip düzenli bir sıra veriyoruz
-  bradford_ozet = bradford_ozet.rename(
-      columns={
-          sicil_col: 'Sicil No',
-          'S': 'Rapor Adedi (S)',
-          'D': 'Toplam Gün (D)',
-      }
-  )
-
-  return bradford_ozet.sort_values(by='Bradford_Skoru', ascending=False)
-
-
-# Streamlit Arayüz Kısmı
-st.subheader('📊 Bradford Faktörü ile Kronik Devamsızlık Analizi')
+st.subheader("📊 Bradford Faktörü ile Kronik Devamsızlık Analizi")
 st.markdown(
-    'Puantaj tablosundaki **istirahat (ist)** verileri üzerinden sık ve kısa'
-    ' süreli devamsızlıklar analiz edilir.'
+    "Puantaj tablosundaki **istirahat (ist)** verileri üzerinden sık ve kısa"
+    " süreli devamsızlıklar analiz edilir."
 )
 
 try:
-  # Sol panelden yüklenen dosyayı dinamik olarak yakalayıp okuyoruz
-  if 'uploaded_file' in locals() and uploaded_file is not None:
-    aktif_df = pd.read_excel(uploaded_file)
-  elif 'dosya' in locals() and dosya is not None:
-    aktif_df = pd.read_excel(dosya)
-  elif 'df' in globals():
+  # Doğrudan uygulamanın ana veri çerçevesi olan df değişkenini alıyoruz
+  if "df" in globals() and isinstance(df, pd.DataFrame):
     aktif_df = df
-  elif 'df' in locals():
+  elif "df" in locals() and isinstance(df, pd.DataFrame):
     aktif_df = df
   else:
     aktif_df = None
@@ -850,28 +769,25 @@ try:
     sonuc_df = hesapla_bradford_puantaj(aktif_df)
 
     secilen_risk = st.selectbox(
-        'Risk Durumuna Göre Filtrele',
+        "Risk Durumuna Göre Filtrele",
         options=[
-            'Tümü',
-            'Yüksek Risk / Kronik Devamsızlık',
-            'Orta Risk / Takip Edilmeli',
-            'Düşük Risk',
-            'Risksiz',
+            "Tümü",
+            "Yüksek Risk / Kronik Devamsızlık",
+            "Orta Risk / Takip Edilmeli",
+            "Düşük Risk",
+            "Risksiz",
         ],
     )
 
-    if secilen_risk != 'Tümü':
-      sonuc_df = sonuc_df[sonuc_df['Risk_Durumu'] == secilen_risk]
+    if secilen_risk != "Tümü":
+      sonuc_df = sonuc_df[sonuc_df["Risk_Durumu"] == secilen_risk]
 
     st.dataframe(sonuc_df, use_container_width=True)
   else:
-    st.warning('Lütfen sol panelden Excel dosyanızı yükleyin.')
+    st.info(
+        "👈 Analizi görüntülemek için lütfen sol panelden Excel dosyanızı"
+        " yükleyin."
+    )
 
 except Exception as e:
-  st.error(f'Hata Detayı: {e}')
-
-
-except Exception as e:
-  st.error(
-      f"Hata Detayı: {e} — (Lütfen Excel dosyasının yüklü olduğundan emin olun)"
-  )
+  st.error(f"Hata Detayı: {e}")
