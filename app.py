@@ -757,15 +757,20 @@ st.markdown(
 )
 
 try:
-  # Doğrudan uygulamanın ana veri çerçevesi olan df değişkenini alıyoruz
-  if "df" in globals() and isinstance(df, pd.DataFrame):
-    aktif_df = df
-  elif "df" in locals() and isinstance(df, pd.DataFrame):
-    aktif_df = df
-  else:
-    aktif_df = None
+  # Sol paneldeki file_uploader bileşeninin döndürdüğü nesneyi doğrudan yakalıyoruz
+  # Projendeki dosya yükleme değişkeninin adı genellikle 'uploaded_file' veya 'file' olur.
+   yuklenen_dosya = None
 
-  if aktif_df is not None:
+  # Sık kullanılan değişken isimlerini tarıyoruz
+  for var_name in ["uploaded_file", "file", "dosya", "excel_file"]:
+    if var_name in locals() and locals()[var_name] is not None:
+      yuklenen_dosya = locals()[var_name]
+      break
+
+  if yuklenen_dosya is not None:
+    # Yüklenen Excel dosyasını Pandas ile okuyoruz
+    aktif_df = pd.read_excel(yuklenen_dosya)
+
     sonuc_df = hesapla_bradford_puantaj(aktif_df)
 
     secilen_risk = st.selectbox(
@@ -785,8 +790,8 @@ try:
     st.dataframe(sonuc_df, use_container_width=True)
   else:
     st.info(
-        "👈 Analizi görüntülemek için lütfen sol panelden Excel dosyanızı"
-        " yükleyin."
+        "👈 Sol panelde dosya görünmesine rağmen seçilmemiş olabilir. Lütfen"
+        " dosyayı tekrar seçin."
     )
 
 except Exception as e:
