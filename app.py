@@ -750,49 +750,80 @@ else:
 
 
 
+def hesapla_bradford_puantaj(df):
+    sicil_col = df.columns[0]
+    ad_col = df.columns[1]
+    soyad_col = df.columns[2]
+
+    df['Ad_Soyad'] = df[ad_col].astype(str).str.strip() + " " + df[soyad_col].astype(str).str.strip()
+    gun_sutunlari = df.columns[3:34]
+
+    melted_df = df.melt(
+        id_vars=[sicil_col, 'Ad_Soyad'],
+        value_vars=gun_sutunlari,
+        var_name='Gun',
+        value_name='Durum'
+    )
+
+    melted_df['Durum_Str'] = melted_df['Durum'].astype(str).str.lower().str.strip()
+    rapor_df = melted_df[melted_df['Durum_Str'].str.contains('ist', na=False)].copy()
+
+    bradford_ozet = (
+        rapor_df.groupby([sicil_col, 'Ad_Soyad'])
+        .agg(S=('Gun', 'nunique'), D=('Gun', 'count'))
+        .reset_index()
+    )
+
+    tum_personel = df[[sicil_col, 'Ad_Soyad']].drop_duplicates()
+    bradford_ozet = pd.merge(tum_personel, bradford_ozet, on=[sicil_col, 'Ad_Soyad'], how='left').fillna(0)
+
+    bradford_ozet['Bradford_Skoru'] = (bradford_ozet['S'] ** 2) * bradford_ozet['D']
+
+    def risk_seviyesi(skor):
+        if skor == 0:
+            return "Risksiz"
+        elif skor < 50:
+            return "Düşük Risk"
+        elif skor < 200:
+            return "Orta Risk / Takip Edilmeli"
+        else:
+            return "Yüksek Risk / Kronik Devamsızlık"
+
+    bradford_ozet['Risk_Durumu'] = bradford_ozet['Bradford_Skoru'].apply(risk_seviyesi)
+    
+    bradford_ozet = bradford_ozet.rename(columns={
+        sicil_col: 'Sicil No',
+        'S': 'Rapor Adedi (S)',
+        'D': 'Toplam Gün (D)'
+    })
+
+    return bradford_ozet.sort_values(by='Bradford_Skoru', ascending=False)
+
 st.subheader("📊 Bradford Faktörü ile Kronik Devamsızlık Analizi")
-st.markdown(
-    "Puantaj tablosundaki **istirahat (ist)** verileri üzerinden sık ve kısa"
-    " süreli devamsızlıklar analiz edilir."
-)
+st.markdown("Puantaj tablosundaki **istirahat (ist)** verileri üzerinden sık ve kısa süreli devamsızlıklar analiz edilir.")
 
 try:
-  # Sol paneldeki file_uploader bileşeninin döndürdüğü nesneyi doğrudan yakalıyoruz
-  # Projendeki dosya yükleme değişkeninin adı genellikle 'uploaded_file' veya 'file' olur.
-   yuklenen_dosya = None
+    yuklenen_dosya = None
+    for var_name in ['uploaded_file', 'file', 'dosya', 'excel_file']:
+        if var_name in locals() and locals()[var_name] is not None:
+            yuklenen_dosya = locals()[var_name]
+            break
 
-  # Sık kullanılan değişken isimlerini tarıyoruz
-  for var_name in ["uploaded_file", "file", "dosya", "excel_file"]:
-    if var_name in locals() and locals()[var_name] is not None:
-      yuklenen_dosya = locals()[var_name]
-      break
+    if yuklenen_dosya is not None:
+        aktif_df = pd.read_excel(yuklenen_dosya)
+        sonuc_df = hesapla_bradford_puantaj(aktif_df)
 
-  if yuklenen_dosya is not None:
-    # Yüklenen Excel dosyasını Pandas ile okuyoruz
-    aktif_df = pd.read_excel(yuklenen_dosya)
+        secilen_risk = st.selectbox(
+            "Risk Durumuna Göre Filtrele",
+            options=["Tümü", "Yüksek Risk / Kronik Devamsızlık", "Orta Risk / Takip Edilmeli", "Düşük Risk", "Risksiz"]
+        )
 
-    sonuc_df = hesapla_bradford_puantaj(aktif_df)
+        if secilen_risk != "Tümü":
+            sonuc_df = sonuc_df[sonuc_df['Risk_Durumu'] == secilen_risk]
 
-    secilen_risk = st.selectbox(
-        "Risk Durumuna Göre Filtrele",
-        options=[
-            "Tümü",
-            "Yüksek Risk / Kronik Devamsızlık",
-            "Orta Risk / Takip Edilmeli",
-            "Düşük Risk",
-            "Risksiz",
-        ],
-    )
-
-    if secilen_risk != "Tümü":
-      sonuc_df = sonuc_df[sonuc_df["Risk_Durumu"] == secilen_risk]
-
-    st.dataframe(sonuc_df, use_container_width=True)
-  else:
-    st.info(
-        "👈 Sol panelde dosya görünmesine rağmen seçilmemiş olabilir. Lütfen"
-        " dosyayı tekrar seçin."
-    )
+        st.dataframe(sonuc_df, use_container_width=True)
+    else:
+        st.info("👈 Lütfen sol panelden Excel dosyanızı seçin.")
 
 except Exception as e:
-  st.error(f"Hata Detayı: {e}")
+    st.error(f"Hata Detayı: {e}")
